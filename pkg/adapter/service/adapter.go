@@ -6,8 +6,11 @@ import (
 	"strings"
 
 	"github.com/BrobridgeOrg/gravity-adapter-kafka/pkg/app"
+	jsoniter "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 )
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type Adapter struct {
 	app      app.App

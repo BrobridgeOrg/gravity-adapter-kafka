@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"encoding/json"
 	"io/ioutil"
 	"os"
 
@@ -14,10 +13,11 @@ type SourceConfig struct {
 }
 
 type SourceInfo struct {
-	Host                string `json:"host"`
-	Port                int    `json:"port"`
-	Topic               string `json:"topic"`
-	GroupId				string `json:"groupId`     
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Topic       string `json:"topic"`
+	GroupId     string `json:"groupId"`
+	WorkerCount *int   `json:"worker_count,omitempty"`
 }
 
 type SourceManager struct {
@@ -47,7 +47,7 @@ func (sm *SourceManager) Initialize() error {
 			"host": info.Host,
 			"port": info.Port,
 		}).Info("Initializing source")
-		
+
 		source := NewSource(sm.adapter, name, &info)
 		err := source.Init()
 		if err != nil {
@@ -56,7 +56,7 @@ func (sm *SourceManager) Initialize() error {
 		}
 
 		sm.sources[name] = source
-	
+
 	}
 
 	return nil

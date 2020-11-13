@@ -2,15 +2,18 @@ package adapter
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	eventbus "github.com/BrobridgeOrg/gravity-adapter-kafka/pkg/eventbus/service"
-	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 	dsa "github.com/BrobridgeOrg/gravity-api/service/dsa"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 )
+
+// Default settings
+var DefaultWorkerCount int = 8
 
 type Packet struct {
 	EventName string      `json:"event"`
@@ -18,13 +21,21 @@ type Packet struct {
 }
 
 type Source struct {
-	adapter             *Adapter
-	eventBus            *eventbus.EventBus
-	name                string
-	host                string
-	port                int
-	topic               string
-	groupId				string
+	adapter     *Adapter
+	workerCount int
+	incoming    chan *kafka.Message
+	eventBus    *eventbus.EventBus
+	name        string
+	host        string
+	port        int
+	topic       string
+	groupId     string
+}
+
+var requestPool = sync.Pool{
+	New: func() interface{} {
+		return &dsa.PublishRequest{}
+	},
 }
 
 func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
@@ -49,13 +60,19 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 
 	info := sourceInfo
 
+	if info.WorkerCount == nil {
+		info.WorkerCount = &DefaultWorkerCount
+	}
+
 	return &Source{
-		adapter:             adapter,
-		name:                name,
-		host:                info.Host,
-		port:                info.Port,
-		topic:               info.Topic,
-		groupId:			 info.GroupId,
+		adapter:     adapter,
+		workerCount: *info.WorkerCount,
+		incoming:    make(chan *kafka.Message, 4096),
+		name:        name,
+		host:        info.Host,
+		port:        info.Port,
+		topic:       info.Topic,
+		groupId:     info.GroupId,
 	}
 }
 
@@ -68,7 +85,7 @@ func (source *Source) InitSubscription() error {
 		for {
 			msg, err := c.ReadMessage(-1)
 			if err == nil {
-				source.HandleMessage(msg)
+				source.incoming <- msg
 			} else {
 				// The client will automatically try to recover from all errors.
 				log.Warn("Consumer error: ", err)
@@ -91,10 +108,10 @@ func (source *Source) Init() error {
 	}).Info("Initializing source connector")
 
 	options := eventbus.Options{
-		ClientName:         source.adapter.clientID + "-" + source.name,
-		GroupId:            source.groupId,
+		ClientName: source.adapter.clientID + "-" + source.name,
+		GroupId:    source.groupId,
 	}
-	
+
 	source.eventBus = eventbus.NewEventBus(
 		address,
 		options,
@@ -105,7 +122,31 @@ func (source *Source) Init() error {
 		return err
 	}
 
+	source.InitWorkers()
+
 	return source.InitSubscription()
+}
+
+func (source *Source) InitWorkers() {
+
+	log.WithFields(log.Fields{
+		"source":      source.name,
+		"client_name": source.adapter.clientID + "-" + source.name,
+		"topic":       source.topic,
+		"count":       source.workerCount,
+	}).Info("Initializing workers ...")
+
+	// Multiplexing
+	for i := 0; i < source.workerCount; i++ {
+		go func() {
+			for {
+				select {
+				case msg := <-source.incoming:
+					go source.HandleMessage(msg)
+				}
+			}
+		}()
+	}
 }
 
 func (source *Source) HandleMessage(m *kafka.Message) {
@@ -118,10 +159,10 @@ func (source *Source) HandleMessage(m *kafka.Message) {
 		log.Warn(err)
 		return
 	}
-	
+
 	log.WithFields(log.Fields{
-		"event": packet.EventName,
-		"partition":   m.TopicPartition,
+		"event":     packet.EventName,
+		"partition": m.TopicPartition,
 	}).Info("Received event")
 
 	// Convert payload to JSON string
@@ -130,10 +171,10 @@ func (source *Source) HandleMessage(m *kafka.Message) {
 		return
 	}
 
-	request := &dsa.PublishRequest{
-		EventName: packet.EventName,
-		Payload:   string(payload),
-	}
+	// Preparing request
+	request := requestPool.Get().(*dsa.PublishRequest)
+	request.EventName = packet.EventName
+	request.Payload = payload
 
 	// Getting connection from pool
 	conn, err := source.adapter.app.GetGRPCPool().Get()
@@ -149,11 +190,12 @@ func (source *Source) HandleMessage(m *kafka.Message) {
 
 	// Publish
 	resp, err := client.Publish(ctx, request)
+	requestPool.Put(request)
 	if err != nil {
 		log.Error("did not connect: ", err)
 		return
 	}
-
+	log.Warn(resp)
 	if resp.Success == false {
 		log.Error("Failed to push message to data source adapter")
 		return
