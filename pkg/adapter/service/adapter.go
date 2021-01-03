@@ -13,9 +13,9 @@ import (
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type Adapter struct {
-	app      app.App
-	sm       *SourceManager
-	clientID string
+	app        app.App
+	sm         *SourceManager
+	clientName string
 }
 
 func NewAdapter(a app.App) *Adapter {
@@ -39,7 +39,7 @@ func (adapter *Adapter) Init() error {
 
 	host = strings.ReplaceAll(host, ".", "_")
 
-	adapter.clientID = fmt.Sprintf("gravity_adapter_kafka-%s", host)
+	adapter.clientName = fmt.Sprintf("gravity_adapter_kafka-%s", host)
 
 	err = adapter.sm.Initialize()
 	if err != nil {

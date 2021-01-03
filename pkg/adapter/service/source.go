@@ -1,15 +1,16 @@
 package adapter
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
+	"unsafe"
 
 	eventbus "github.com/BrobridgeOrg/gravity-adapter-kafka/pkg/eventbus/service"
 	dsa "github.com/BrobridgeOrg/gravity-api/service/dsa"
+	parallel_chunked_flow "github.com/cfsghost/parallel-chunked-flow"
+	jsoniter "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 )
 
 // Default settings
@@ -23,19 +24,26 @@ type Packet struct {
 type Source struct {
 	adapter     *Adapter
 	workerCount int
-	incoming    chan *kafka.Message
+	incoming    chan []byte
 	eventBus    *eventbus.EventBus
 	name        string
 	host        string
 	port        int
 	topic       string
 	groupId     string
+	parser      *parallel_chunked_flow.ParallelChunkedFlow
 }
 
 var requestPool = sync.Pool{
 	New: func() interface{} {
 		return &dsa.PublishRequest{}
 	},
+}
+
+func StrToBytes(s string) []byte {
+	x := (*[2]uintptr)(unsafe.Pointer(&s))
+	h := [3]uintptr{x[0], x[1], x[1]}
+	return *(*[]byte)(unsafe.Pointer(&h))
 }
 
 func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
@@ -64,15 +72,40 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 		info.WorkerCount = &DefaultWorkerCount
 	}
 
+	// Initialize parapllel chunked flow
+	pcfOpts := parallel_chunked_flow.Options{
+		BufferSize: 204800,
+		ChunkSize:  512,
+		ChunkCount: 512,
+		Handler: func(data interface{}, output chan interface{}) {
+			/*
+				id := atomic.AddUint64((*uint64)(&counter), 1)
+				if id%1000 == 0 {
+					log.Info(id)
+				}
+			*/
+			eventName := jsoniter.Get(data.([]byte), "event").ToString()
+			payload := jsoniter.Get(data.([]byte), "payload").ToString()
+
+			// Preparing request
+			request := requestPool.Get().(*dsa.PublishRequest)
+			request.EventName = eventName
+			request.Payload = StrToBytes(payload)
+
+			output <- request
+		},
+	}
+
 	return &Source{
 		adapter:     adapter,
 		workerCount: *info.WorkerCount,
-		incoming:    make(chan *kafka.Message, 4096),
+		incoming:    make(chan []byte, 204800),
 		name:        name,
 		host:        info.Host,
 		port:        info.Port,
 		topic:       info.Topic,
 		groupId:     info.GroupId,
+		parser:      parallel_chunked_flow.NewParallelChunkedFlow(&pcfOpts),
 	}
 }
 
@@ -85,7 +118,12 @@ func (source *Source) InitSubscription() error {
 		for {
 			msg, err := c.ReadMessage(-1)
 			if err == nil {
-				source.incoming <- msg
+
+				log.WithFields(log.Fields{
+					"partition": msg.TopicPartition,
+				}).Info("Received event")
+
+				source.incoming <- msg.Value
 			} else {
 				// The client will automatically try to recover from all errors.
 				log.Warn("Consumer error: ", err)
@@ -103,12 +141,12 @@ func (source *Source) Init() error {
 	log.WithFields(log.Fields{
 		"source":      source.name,
 		"address":     address,
-		"client_name": source.adapter.clientID + "-" + source.name,
+		"client_name": source.adapter.clientName + "-" + source.name,
 		"topic":       source.topic,
 	}).Info("Initializing source connector")
 
 	options := eventbus.Options{
-		ClientName: source.adapter.clientID + "-" + source.name,
+		ClientName: source.adapter.clientName + "-" + source.name,
 		GroupId:    source.groupId,
 	}
 
@@ -122,82 +160,50 @@ func (source *Source) Init() error {
 		return err
 	}
 
-	source.InitWorkers()
+	go source.eventReceiver()
+	go source.requestHandler()
 
 	return source.InitSubscription()
 }
 
-func (source *Source) InitWorkers() {
+func (source *Source) eventReceiver() {
 
 	log.WithFields(log.Fields{
 		"source":      source.name,
-		"client_name": source.adapter.clientID + "-" + source.name,
-		"topic":       source.topic,
+		"client_name": source.adapter.clientName + "-" + source.name,
 		"count":       source.workerCount,
-	}).Info("Initializing workers ...")
+	}).Info("Initializing event receiver ...")
 
-	// Multiplexing
-	for i := 0; i < source.workerCount; i++ {
-		go func() {
-			for {
-				select {
-				case msg := <-source.incoming:
-					go source.HandleMessage(msg)
-				}
-			}
-		}()
+	for {
+		select {
+		case msg := <-source.incoming:
+			source.parser.Push(msg)
+		}
 	}
 }
 
-func (source *Source) HandleMessage(m *kafka.Message) {
+func (source *Source) requestHandler() {
 
-	var packet Packet
-
-	// Parse JSON
-	err := json.Unmarshal(m.Value, &packet)
-	if err != nil {
-		log.Warn(err)
-		return
+	for {
+		select {
+		case req := <-source.parser.Output():
+			source.HandleRequest(req.(*dsa.PublishRequest))
+			requestPool.Put(req)
+		}
 	}
+}
 
-	log.WithFields(log.Fields{
-		"event":     packet.EventName,
-		"partition": m.TopicPartition,
-	}).Info("Received event")
+func (source *Source) HandleRequest(request *dsa.PublishRequest) {
 
-	// Convert payload to JSON string
-	payload, err := json.Marshal(packet.Payload)
-	if err != nil {
-		return
-	}
+	for {
+		connector := source.adapter.app.GetAdapterConnector()
+		err := connector.Publish(request.EventName, request.Payload, nil)
+		if err != nil {
+			log.Error(err)
+			time.Sleep(time.Second)
+			continue
+		}
 
-	// Preparing request
-	request := requestPool.Get().(*dsa.PublishRequest)
-	request.EventName = packet.EventName
-	request.Payload = payload
-
-	// Getting connection from pool
-	conn, err := source.adapter.app.GetGRPCPool().Get()
-	if err != nil {
-		log.Error("Failed to get connection: ", err)
-		return
-	}
-	client := dsa.NewDataSourceAdapterClient(conn)
-
-	// Preparing context
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-
-	// Publish
-	resp, err := client.Publish(ctx, request)
-	requestPool.Put(request)
-	if err != nil {
-		log.Error("did not connect: ", err)
-		return
-	}
-	log.Warn(resp)
-	if resp.Success == false {
-		log.Error("Failed to push message to data source adapter")
-		return
+		break
 	}
 }

@@ -1,9 +1,9 @@
 package app
 
 import (
-	pool "github.com/cfsghost/grpc-connection-pool"
+	gravity_adapter "github.com/BrobridgeOrg/gravity-sdk/adapter"
 )
 
 type App interface {
-	GetGRPCPool() *pool.GRPCPool
+	GetAdapterConnector() *gravity_adapter.AdapterConnector
 }
