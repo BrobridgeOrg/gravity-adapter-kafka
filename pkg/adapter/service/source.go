@@ -77,7 +77,7 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 		BufferSize: 204800,
 		ChunkSize:  512,
 		ChunkCount: 512,
-		Handler: func(data interface{}, output chan interface{}) {
+		Handler: func(data interface{}, output func(interface{})) {
 			/*
 				id := atomic.AddUint64((*uint64)(&counter), 1)
 				if id%1000 == 0 {
@@ -92,7 +92,7 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 			request.EventName = eventName
 			request.Payload = StrToBytes(payload)
 
-			output <- request
+			output(request)
 		},
 	}
 
