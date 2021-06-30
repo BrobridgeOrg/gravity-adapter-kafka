@@ -1,7 +1,8 @@
 package adapter
 
 import (
-	"fmt"
+	//	"fmt"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -26,7 +27,7 @@ type Source struct {
 	incoming    chan []byte
 	eventBus    *eventbus.EventBus
 	name        string
-	host        string
+	hosts       []string
 	port        int
 	topic       string
 	groupId     string
@@ -100,8 +101,7 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 		workerCount: *info.WorkerCount,
 		incoming:    make(chan []byte, 204800),
 		name:        name,
-		host:        info.Host,
-		port:        info.Port,
+		hosts:       info.Hosts,
 		topic:       info.Topic,
 		groupId:     info.GroupId,
 		parser:      parallel_chunked_flow.NewParallelChunkedFlow(&pcfOpts),
@@ -135,7 +135,8 @@ func (source *Source) InitSubscription() error {
 
 func (source *Source) Init() error {
 
-	address := fmt.Sprintf("%s:%d", source.host, source.port)
+	//	address := fmt.Sprintf("%s:%d", source.host, source.port)
+	address := strings.Join(source.hosts, ",")
 
 	log.WithFields(log.Fields{
 		"source":      source.name,

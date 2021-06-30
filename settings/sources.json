@@ -1,14 +1,7 @@
 {
 	"sources": {
-		"myqueue": {
-			"host": "0.0.0.0",
-			"port": 31090,
-			"groupId": "test-group",
-			"topic": "example.userevent"
-		},
 		"account_queue": {
-			"host": "0.0.0.0",
-			"port": 31090,
+			"hosts": ["172.17.0.1:9092","172.17.0.1:9093","172.17.0.1:9094"],
 			"groupId": "test-group",
 			"topic": "example.accountevent"
 		}

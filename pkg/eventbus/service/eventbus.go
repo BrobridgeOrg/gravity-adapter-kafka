@@ -3,13 +3,13 @@ package eventbus
 import (
 	//"time"
 
-	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 )
 
 type Options struct {
-	ClientName		string
-	GroupId         string
+	ClientName string
+	GroupId    string
 }
 
 type EventBusHandler struct {
@@ -19,15 +19,15 @@ type EventBusHandler struct {
 
 type EventBus struct {
 	connection *kafka.Consumer
-	host       string
+	hosts      string
 	handler    *EventBusHandler
 	options    *Options
 }
 
-func NewEventBus(host string, options Options) *EventBus {
+func NewEventBus(hosts string, options Options) *EventBus {
 	return &EventBus{
 		connection: nil,
-		host:       host,
+		hosts:      hosts,
 		options:    &options,
 	}
 }
@@ -35,12 +35,12 @@ func NewEventBus(host string, options Options) *EventBus {
 func (eb *EventBus) NewConsumer() error {
 
 	log.WithFields(log.Fields{
-		"host":            eb.host,
-		"Group ID":        eb.options.GroupId,
+		"host":     eb.hosts,
+		"Group ID": eb.options.GroupId,
 	}).Info("Connecting to Kafka server")
-	
+
 	conn, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": eb.host,
+		"bootstrap.servers": eb.hosts,
 		"group.id":          eb.options.GroupId,
 		"auto.offset.reset": "earliest",
 	})

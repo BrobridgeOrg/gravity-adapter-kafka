@@ -13,11 +13,10 @@ type SourceConfig struct {
 }
 
 type SourceInfo struct {
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	Topic       string `json:"topic"`
-	GroupId     string `json:"groupId"`
-	WorkerCount *int   `json:"worker_count,omitempty"`
+	Hosts       []string `json:"hosts"`
+	Topic       string   `json:"topic"`
+	GroupId     string   `json:"groupId"`
+	WorkerCount *int     `json:"worker_count,omitempty"`
 }
 
 type SourceManager struct {
@@ -43,9 +42,8 @@ func (sm *SourceManager) Initialize() error {
 	for name, info := range config.Sources {
 
 		log.WithFields(log.Fields{
-			"name": name,
-			"host": info.Host,
-			"port": info.Port,
+			"name":  name,
+			"hosts": info.Hosts,
 		}).Info("Initializing source")
 
 		source := NewSource(sm.adapter, name, &info)
