@@ -8,7 +8,7 @@ maxReconnects = -1
 
 [adapter]
 adapter_id = "kafka_adapter"
-adapter_name = "KAFKA Adapter"
+adapter_name = "Kafka Adapter"
 
 [source]
 config = "./settings/sources.json"
