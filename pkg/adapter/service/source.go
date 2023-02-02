@@ -2,6 +2,7 @@ package adapter
 
 import (
 	//	"fmt"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	parallel_chunked_flow "github.com/cfsghost/parallel-chunked-flow"
 	jsoniter "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 )
 
 // Default settings
@@ -19,12 +21,13 @@ var DefaultWorkerCount int = 8
 type Packet struct {
 	EventName string
 	Payload   []byte
+	Offset    int64
 }
 
 type Source struct {
 	adapter     *Adapter
 	workerCount int
-	incoming    chan []byte
+	incoming    chan *kafka.Message
 	eventBus    *eventbus.EventBus
 	name        string
 	hosts       []string
@@ -77,20 +80,22 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 		BufferSize: 204800,
 		ChunkSize:  512,
 		ChunkCount: 512,
-		Handler: func(data interface{}, output func(interface{})) {
+		Handler: func(msg interface{}, output func(interface{})) {
 			/*
 				id := atomic.AddUint64((*uint64)(&counter), 1)
 				if id%1000 == 0 {
 					log.Info(id)
 				}
 			*/
-			eventName := jsoniter.Get(data.([]byte), "event").ToString()
-			payload := jsoniter.Get(data.([]byte), "payload").ToString()
+			data := msg.(*kafka.Message).Value
+			eventName := jsoniter.Get(data, "event").ToString()
+			payload := jsoniter.Get(data, "payload").ToString()
 
 			// Preparing request
 			request := requestPool.Get().(*Packet)
 			request.EventName = eventName
 			request.Payload = StrToBytes(payload)
+			request.Offset = int64(msg.(*kafka.Message).TopicPartition.Offset)
 
 			output(request)
 		},
@@ -99,7 +104,7 @@ func NewSource(adapter *Adapter, name string, sourceInfo *SourceInfo) *Source {
 	return &Source{
 		adapter:     adapter,
 		workerCount: *info.WorkerCount,
-		incoming:    make(chan []byte, 204800),
+		incoming:    make(chan *kafka.Message, 204800),
 		name:        name,
 		hosts:       info.Hosts,
 		topic:       info.Topic,
@@ -122,7 +127,7 @@ func (source *Source) InitSubscription() error {
 					"partition": msg.TopicPartition,
 				}).Info("Received event")
 
-				source.incoming <- msg.Value
+				source.incoming <- msg
 			} else {
 				// The client will automatically try to recover from all errors.
 				log.Warn("Consumer error: ", err)
@@ -196,8 +201,10 @@ func (source *Source) requestHandler() {
 func (source *Source) HandleRequest(request *Packet) {
 
 	for {
+		meta := make(map[string]interface{})
+		meta["Msg-Id"] = fmt.Sprintf("%s-%s-%s", source.name, source.topic, request.Offset)
 		connector := source.adapter.app.GetAdapterConnector()
-		err := connector.Publish(request.EventName, request.Payload, nil)
+		err := connector.Publish(request.EventName, request.Payload, meta)
 		if err != nil {
 			log.Error(err)
 			time.Sleep(time.Second)
